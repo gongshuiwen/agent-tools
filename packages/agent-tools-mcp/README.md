@@ -4,8 +4,8 @@ MCP v2 adapters (Skills bridge requires SDK support newer than PyPI 2.3.0): impo
 
 - `MCPProvider(name, server, skills=True)` enables `provider.skills.list/load/read_resource`.
 - `provider.skills.register(registry)` adds namespaced `skills.mcp.<name>.*` readers.
-- `create_tools_server(registry, include=["..."])` exports chosen tools and exact schemas.
+- `create_tools_server(registry, include=["..."])` exports chosen tools; `authorize(ctx, name, args)` can deny each call. Provider errors are masked unless `expose_remote_errors=True`.
 - `create_skills_server(catalog)` exports a snapshot of local UTF-8 resources with SHA-256 manifests.
 
-Skill execution, authorization and sandboxing are out of scope.
+The host must provide authentication, trusted plugin configuration, and sandboxing. Authorization is an optional callback, not an identity provider.
 See the repository [README](../../README.md).

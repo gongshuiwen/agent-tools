@@ -1,4 +1,4 @@
-# 架构约束（v0.3.0）
+# 架构约束（v0.3.1）
 
 ```text
 Python @tool ───────┐
@@ -12,7 +12,7 @@ ToolRegistry ──────────── create_tools_server (allowlist
 ```
 
 - Core 只定义工具契约、注册与执行，不依赖 MCP 或 Skills。
-- MCP Tool 保留外部 Schema；MCPProvider 持有连接，关闭前 `registry.unmount(provider)`。
+- MCP Tool 保留外部 Schema；MCPProvider 持有连接；推荐在其 `async with` 内通过 `registry.mounted(provider)` 自动卸载。
 - SkillCatalog 管本地技能；RemoteSkills 通过现有 MCP Client 会话按需发现、加载远程技能。Skill 不是可直接执行的 Tool。
 - 双向 Skills 桥接为预览功能；PyPI MCP SDK 2.3.0 尚不包含扩展。桥接使用官方 `io.modelcontextprotocol/skills`，不实现新传输协议。静态资源校验字节数和 SHA-256，动态资源暂不读取。
 - MCP Server 导出是创建时的**快照**。仅显式选择的本地目录，跳过隐藏文件与符号链接；读取限制为 UTF-8、每文件 256 KiB。
@@ -21,4 +21,6 @@ ToolRegistry ──────────── create_tools_server (allowlist
 完整用法见 [README](../README.md)。
 
 - `create_tools_server(registry, include=[...])` 使用低层 MCP Server 保留 JSON Schema，明确限定导出范围；列表是快照，执行仍经 ToolExecutor，远程 Provider 需保持连接。
-- 远程 MCP 内容块、`is_error`、结构化数据可透传；不代理 Resources/Prompts，也不提供 HTTP 身份验证。
+- MCP 成功结果保留结构化数据与内容块；上游错误内容默认遮蔽，仅显式设置 `expose_remote_errors=True` 透传。HTTP 身份认证由宿主负责。
+- 核心执行器和 MCP 导出都支持可选授权回调；非 `True` 或异常视为拒绝。调用异常不会向客户端公开原文。
+- Skill 资源读取拒绝隐藏路径与符号链接；无完整 TOCTOU 保护，也不是沙箱。

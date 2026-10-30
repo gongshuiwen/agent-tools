@@ -83,3 +83,46 @@ def test_mcp_provider_can_be_reexported():
             registry.unmount(provider)
 
     asyncio.run(run())
+
+
+def test_real_sdk_call_authorization_and_upstream_error_masking():
+    mcp = pytest.importorskip("mcp")
+
+    @tool
+    def protected() -> str:
+        """Read protected data."""
+        return "secret"
+
+    class BadProvider:
+        async def discover(self):
+            return [ToolSpec(
+                "remote.fail", "Failing MCP provider", {"type": "object"},
+            )]
+
+        async def invoke(self, name, arguments):
+            from agent_tools import ToolError
+            return ToolResult(
+                name, False, error=ToolError("remote_tool_error", "SENSITIVE_VALUE"),
+                metadata={"content": [{"type": "text", "text": "SENSITIVE_VALUE"}]},
+            )
+
+    async def scenario():
+        registry = ToolRegistry()
+        registry.register(protected)
+        async with registry.mounted(BadProvider()):
+            async def authorize(ctx, name, args):
+                assert ctx is not None
+                return name == "remote.fail"
+
+            server = create_tools_server(
+                registry, include=["protected", "remote.fail"], authorize=authorize,
+            )
+            async with mcp.Client(server) as client:
+                denied = await client.call_tool("protected", {})
+                assert denied.is_error
+                assert "permission_denied" in denied.content[0].text
+                failed = await client.call_tool("remote.fail", {})
+                assert failed.is_error
+                assert "SENSITIVE_VALUE" not in str(failed.content)
+
+    asyncio.run(scenario())

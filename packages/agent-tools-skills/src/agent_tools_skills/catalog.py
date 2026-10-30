@@ -79,9 +79,16 @@ class SkillCatalog:
     def read_resource(self, skill_id: str, path: str) -> str:
         """Read a small UTF-8 resource, rejecting traversal and symlink escapes."""
         base = self._skills[skill_id].location
-        if not path or "\\" in path or Path(path).is_absolute() or ".." in Path(path).parts:
+        parts = Path(path).parts
+        if (not path or "\\" in path or Path(path).is_absolute() or ".." in parts
+                or any(part.startswith(".") for part in parts)):
             raise ValueError("Unsafe skill resource path")
-        target = (base / path).resolve(strict=True)
+        current = base
+        for part in parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("Unsafe skill resource path: symlinks are not allowed")
+        target = current.resolve(strict=True)
         if not target.is_relative_to(base) or not target.is_file():
             raise ValueError("Skill resource is outside its directory or not a file")
         if target.stat().st_size > _MAX_BYTES:

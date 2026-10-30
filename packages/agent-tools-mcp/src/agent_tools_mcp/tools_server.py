@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable
 
 from agent_tools import ToolExecutor
 from agent_tools.spec import BoundTool
@@ -11,9 +12,12 @@ from agent_tools.spec import BoundTool
 if TYPE_CHECKING:
     from agent_tools import ToolRegistry, ToolResult
 
+MCPAuthorizer = Callable[[Any, str, dict[str, Any]], bool | Awaitable[bool]]
+
 
 def create_tools_server(
-    registry: ToolRegistry, *, include: Iterable[str], name: str = "agent-tools"
+    registry: ToolRegistry, *, include: Iterable[str], name: str = "agent-tools",
+    authorize: MCPAuthorizer | None = None, expose_remote_errors: bool = False,
 ):
     """Export named tools with their original schemas; never export implicitly.
 
@@ -51,8 +55,17 @@ def create_tools_server(
     async def call_tool(ctx, params):
         if params.name not in definitions:
             return _error("tool_not_found: Tool is not exposed")
-        result = await executor.execute(params.name, params.arguments or {})
-        return _result_to_mcp(result)
+        arguments = params.arguments or {}
+        if authorize is not None:
+            try:
+                allowed = authorize(ctx, params.name, arguments)
+                if inspect.isawaitable(allowed):
+                    allowed = await allowed
+            except Exception:
+                allowed = False
+            if allowed is not True:
+                return _error("permission_denied: Permission denied")
+        return _result_to_mcp(await executor.execute(params.name, arguments))
 
     def _error(message: str):
         return CallToolResult(content=[TextContent(type="text", text=message)], is_error=True)
@@ -61,7 +74,7 @@ def create_tools_server(
         # MCPProvider stores original MCP blocks, so images, resource links and
         # remote tool failures can pass through without losing their semantics.
         blocks = (result.metadata or {}).get("content")
-        if blocks is not None:
+        if blocks is not None and (result.ok or expose_remote_errors):
             try:
                 payload = {"content": blocks, "isError": not result.ok}
                 if isinstance(result.output, dict):
@@ -71,8 +84,19 @@ def create_tools_server(
                 return _error("serialization_error: Invalid MCP content from provider")
 
         if not result.ok:
-            error = result.error
-            return _error(f"{error.code}: {error.message}" if error else "execution_error")
+            code = result.error.code if result.error else "execution_error"
+            # An untrusted provider may supply arbitrary error text and codes.
+            messages = {
+                "tool_not_found": "Tool unavailable",
+                "validation_error": "Invalid tool arguments",
+                "permission_denied": "Permission denied",
+                "serialization_error": "Invalid tool result",
+                "remote_tool_error": "Upstream tool failed",
+                "execution_error": "Tool execution failed",
+            }
+            if code not in messages:
+                code = "execution_error"
+            return _error(f"{code}: {messages[code]}")
         output = result.output
         text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
         return CallToolResult(

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from importlib.metadata import entry_points
-from typing import Any, Callable, Iterable
+from typing import Any, AsyncIterator, Callable, Iterable
 
 from .errors import DuplicateToolError, PluginLoadError, ToolNotFoundError
 from .spec import BoundTool, ToolProvider
@@ -36,6 +37,18 @@ class ToolRegistry:
         for spec in specs:
             self._tools[spec.name] = BoundTool(spec, provider)
         return names
+
+    @asynccontextmanager
+    async def mounted(self, provider: ToolProvider) -> AsyncIterator[ToolProvider]:
+        """Mount for a scoped lifetime, unregistering even if the caller fails.
+
+        The caller owns the provider connection; keep it open around this scope.
+        """
+        await self.mount(provider)
+        try:
+            yield provider
+        finally:
+            self.unmount(provider)
 
     def unmount(self, provider: ToolProvider) -> None:
         """Unregister a provider's tools before closing its connection."""

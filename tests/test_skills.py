@@ -47,7 +47,7 @@ def test_skill_rejects_unsafe_resource_paths(tmp_path):
     outside = tmp_path / "secret.txt"
     outside.write_text("secret")
     (skill / "escape.txt").symlink_to(outside)
-    with pytest.raises(ValueError, match="outside"):
+    with pytest.raises(ValueError, match="Unsafe"):
         catalog.read_resource("local:code-review", "escape.txt")
 
 
@@ -63,3 +63,16 @@ def test_rejects_invalid_frontmatter_duplicates_and_large_files(tmp_path):
         catalog.read_resource("local:code-review", "large.txt")
     with pytest.raises(ValueError, match="Duplicate skill"):
         SkillCatalog.from_paths([tmp_path, skill])
+
+
+def test_hidden_paths_and_symlinks_are_not_readable(tmp_path):
+    skill = make_skill(tmp_path)
+    (skill / ".env").write_text("TOKEN=secret", encoding="utf-8")
+    (skill / "references" / ".hidden.md").write_text("secret", encoding="utf-8")
+    (skill / "alias.md").symlink_to(skill / "SKILL.md")
+    (skill / "alias-dir").symlink_to(skill / "references", target_is_directory=True)
+    catalog = SkillCatalog.from_paths([tmp_path])
+    for path in (".env", "references/.hidden.md", "alias.md", "alias-dir/checks.md"):
+        with pytest.raises(ValueError, match="Unsafe"):
+            catalog.read_resource("local:code-review", path)
+    assert ".env" not in catalog.resource_paths("local:code-review")

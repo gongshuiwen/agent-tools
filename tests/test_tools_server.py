@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from agent_tools import ToolRegistry, ToolResult, ToolSpec, tool
+from agent_tools import ToolError, ToolRegistry, ToolResult, ToolSpec, tool
 from agent_tools_mcp import create_tools_server
 
 
@@ -152,3 +152,59 @@ def test_export_does_not_expose_tools_added_later(fake_sdk):
 
     registry.register(later)
     assert _call(server, "later", {}).is_error
+
+
+def test_server_authorizer_denies_and_fails_closed(fake_sdk):
+    registry = ToolRegistry()
+    registry.register(add)
+    calls = []
+
+    async def permit(ctx, name, args):
+        calls.append(args["a"])
+        return args["a"] == 1
+
+    server = create_tools_server(registry, include=["math.add"], authorize=permit)
+    assert _call(server, "math.add", {"a": 1, "b": 2}).content[0].text == "3"
+    denied = _call(server, "math.add", {"a": 2, "b": 2})
+    assert denied.is_error and "permission_denied" in denied.content[0].text
+    assert calls == [1, 2]
+
+    def broken(ctx, name, args):
+        raise RuntimeError("AUTH_SECRET")
+
+    server = create_tools_server(registry, include=["math.add"], authorize=broken)
+    failed = _call(server, "math.add", {"a": 1, "b": 2})
+    assert failed.is_error and "AUTH_SECRET" not in failed.content[0].text
+
+
+def test_upstream_error_content_is_hidden_by_default(fake_sdk):
+    class BrokenProvider(Provider):
+        async def invoke(self, name, arguments):
+            return ToolResult(
+                name, False, error=ToolError("remote_tool_error", "ACCESS_TOKEN=SECRET"),
+                metadata={"content": [{"type": "text", "text": "ACCESS_TOKEN=SECRET"}]},
+            )
+
+    registry = ToolRegistry()
+    asyncio.run(registry.mount(BrokenProvider()))
+    server = create_tools_server(registry, include=["mcp.remote.read"])
+    failed = _call(server, "mcp.remote.read", {"id": "x"})
+    assert failed.is_error and "SECRET" not in str(failed.content)
+
+    trusted = create_tools_server(
+        registry, include=["mcp.remote.read"], expose_remote_errors=True
+    )
+    passed = _call(trusted, "mcp.remote.read", {"id": "x"})
+    assert passed.is_error and passed.content[0]["text"] == "ACCESS_TOKEN=SECRET"
+
+
+def test_provider_error_code_cannot_inject_text(fake_sdk):
+    class BrokenCodeProvider(Provider):
+        async def invoke(self, name, arguments):
+            return ToolResult(name, False, error=ToolError("SECRET_TOKEN", "SECRET_TOKEN"))
+
+    registry = ToolRegistry()
+    asyncio.run(registry.mount(BrokenCodeProvider()))
+    server = create_tools_server(registry, include=["mcp.remote.read"])
+    result = _call(server, "mcp.remote.read", {"id": "x"})
+    assert result.is_error and "SECRET_TOKEN" not in result.content[0].text
