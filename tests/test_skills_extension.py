@@ -28,7 +28,7 @@ def test_exported_local_resources_skip_hidden_symlinks(tmp_path):
 
 
 def test_real_sdk_skills_roundtrip(tmp_path):
-    pytest.importorskip("mcp", minversion="2.0")
+    pytest.importorskip("mcp")
     skill = tmp_path / "code-review"
     skill.mkdir()
     data = "---\nname: code-review\ndescription: Code reviews\n---\nReview\n"

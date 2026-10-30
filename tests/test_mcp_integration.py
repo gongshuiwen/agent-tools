@@ -6,7 +6,7 @@ import pytest
 
 
 def test_real_mcp_sdk_roundtrip():
-    pytest.importorskip("mcp", minversion="2.0")
+    pytest.importorskip("mcp")
     from mcp.server import MCPServer
 
     from agent_tools import ToolExecutor, ToolRegistry
