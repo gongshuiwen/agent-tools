@@ -1,106 +1,103 @@
-"""Registration, deterministic plugin discovery and plugin rollback tests."""
+"""Tool and application registration is explicit, sorted and atomic."""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable
 
 import pytest
 
 from agent_tools import (
+    App,
+    AppNotFoundError,
+    DuplicateAppError,
     DuplicateToolError,
-    PluginLoadError,
+    Tool,
     ToolNotFoundError,
     ToolRegistry,
     tool,
 )
 
 
-@tool
+@tool(name="native.echo")
 def echo(text: str) -> str:
     """Echo text."""
     return text
 
 
 @dataclass
-class FakeEntryPoint:
-    name: str
-    factory: Callable[..., Any]
+class StaticProvider:
+    tools: list[Tool]
 
-    def load(self) -> Callable[..., Any]:
-        return self.factory
+    async def discover(self) -> list[Tool]:
+        return self.tools
 
 
-def test_registry_is_explicit_and_deterministic():
+class BrokenProvider:
+    async def discover(self) -> list[Tool]:
+        raise RuntimeError("remote discovery failed")
+
+
+def test_explicit_tools_remain_available():
     registry = ToolRegistry()
     registry.register(echo)
-    assert registry.get("echo").name == "echo"
-    assert [t.name for t in registry.list_tools()] == ["echo"]
+    assert [t.name for t in registry.list_tools()] == ["native.echo"]
     with pytest.raises(DuplicateToolError):
         registry.register(echo)
     with pytest.raises(ToolNotFoundError):
-        registry.get("missing")
+        registry.get("unknown")
+    with pytest.raises(AppNotFoundError):
+        registry.get_app("unknown")
 
 
-def test_plugins_are_discovered_on_demand_and_loaded_once(monkeypatch):
-    from agent_tools import registry as registry_module
+def test_app_registration_is_atomic_across_multiple_providers():
+    async def check():
+        registry = ToolRegistry()
+        first = App(name="bad", description="bad", providers=[
+            StaticProvider([Tool.from_callable(echo, name="new.echo")]), BrokenProvider(),
+        ])
+        with pytest.raises(RuntimeError, match="discovery failed"):
+            await registry.load_app(first)
+        assert registry.list_apps() == []
+        assert registry.list_tools() == []
 
-    calls: list[str] = []
+        app = App(name="good", description="Good app", providers=[
+            StaticProvider([Tool.from_callable(echo, name="new.echo")]),
+            StaticProvider([Tool.from_callable(echo, name="other.echo")]),
+        ])
+        assert await registry.load_app(app) == ["new.echo", "other.echo"]
+        assert registry.get_app("good") is app
+        assert [t.name for t in registry.list_tools(app="good")] == ["new.echo", "other.echo"]
+        assert [app.name for app in registry.list_apps()] == ["good"]
+        with pytest.raises(DuplicateAppError):
+            await registry.load_app(app)
 
-    def register_b(target: ToolRegistry) -> None:
-        calls.append("b")
-        target.register(echo)
+    asyncio.run(check())
 
-    def register_a(target: ToolRegistry) -> None:
-        calls.append("a")
-        target.register(echo)
 
-    fake = [FakeEntryPoint("b", register_b), FakeEntryPoint("a", register_a)]
-    monkeypatch.setattr(registry_module, "entry_points", lambda *, group: fake)
+def test_cross_app_and_within_app_conflicts_do_not_partially_register():
+    async def check():
+        registry = ToolRegistry()
+        first = App("first", "First", providers=[StaticProvider([Tool.from_callable(echo, name="native.echo")])])
+        await registry.load_app(first)
+        second = App("second", "Second", providers=[StaticProvider([
+            Tool.from_callable(echo, name="new.echo"), Tool.from_callable(echo, name="native.echo")
+        ])])
+        with pytest.raises(DuplicateToolError):
+            await registry.load_app(second)
+        duplicates = App("third", "Third", providers=[StaticProvider([
+            Tool.from_callable(echo, name="third.echo"),
+            Tool.from_callable(echo, name="third.echo"),
+        ])])
+        with pytest.raises(DuplicateToolError):
+            await registry.load_app(duplicates)
+        assert [a.name for a in registry.list_apps()] == ["first"]
+        assert [t.name for t in registry.list_tools()] == ["native.echo"]
 
+    asyncio.run(check())
+
+
+def test_empty_app_is_valid():
     registry = ToolRegistry()
-    assert calls == []
-    assert registry.load_plugins(names=["b"]) == ["b"]
-    assert registry.load_plugins(names=["b"]) == []
-    assert calls == ["b"]
-    # Different plugins producing the same tool name must not silently overwrite.
-    with pytest.raises(PluginLoadError, match="Failed to load plugin 'a'"):
-        registry.load_plugins(names=["a"])
-    assert [t.name for t in registry.list_tools()] == ["echo"]
-
-
-def test_failed_plugin_rolls_back_partial_registration(monkeypatch):
-    from agent_tools import registry as registry_module
-
-    @tool
-    def other(value: int) -> int:
-        """Return a value."""
-        return value
-
-    def broken(registry: ToolRegistry) -> None:
-        registry.register(other)
-        raise RuntimeError("registration failed")
-
-    monkeypatch.setattr(
-        registry_module,
-        "entry_points",
-        lambda *, group: [FakeEntryPoint("broken", broken)],
-    )
-    registry = ToolRegistry()
-    registry.register(echo)
-    with pytest.raises(PluginLoadError, match="registration failed"):
-        registry.load_plugins()
-    assert [t.name for t in registry.list_tools()] == ["echo"]
-
-
-def test_unknown_and_duplicate_plugin_entry_points(monkeypatch):
-    from agent_tools import registry as registry_module
-
-    fake = [FakeEntryPoint("same", lambda registry: None)]
-    monkeypatch.setattr(registry_module, "entry_points", lambda *, group: fake)
-    with pytest.raises(PluginLoadError, match="Unknown plugin"):
-        ToolRegistry().load_plugins(["missing"])
-
-    monkeypatch.setattr(registry_module, "entry_points", lambda *, group: fake + fake)
-    with pytest.raises(PluginLoadError, match="Duplicate plugin"):
-        ToolRegistry().load_plugins()
+    asyncio.run(registry.load_app(App("empty", "No tools")))
+    assert registry.list_tools(app="empty") == []

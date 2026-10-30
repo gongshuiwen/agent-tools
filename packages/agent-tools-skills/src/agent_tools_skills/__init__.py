@@ -1,5 +1,5 @@
-"""Local Agent Skills catalog; instruction files are never executed."""
+"""Optional Agent Skills adapter: SKILL.md directories as tools."""
 
-from .catalog import SkillCatalog, SkillSpec
+from .provider import SkillProvider
 
-__all__ = ["SkillCatalog", "SkillSpec"]
+__all__ = ["SkillProvider"]

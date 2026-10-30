@@ -1,5 +1,3 @@
 # agent-tools-core
 
-Framework-independent Python tool definitions, registration, validation and execution.
-
-See the workspace-level `README.md` for setup and examples.
+Small framework-agnostic App → Provider → Tool abstractions, validated execution and a CLI. See the workspace [README](../../README.md).

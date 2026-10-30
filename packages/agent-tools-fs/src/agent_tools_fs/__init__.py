@@ -1,16 +1,10 @@
-"""Filesystem plugin; explicitly registered via installed entry points."""
-
-from __future__ import annotations
-
-from agent_tools import ToolRegistry
+"""Example native tool collection exposed through Python Entry Points."""
 
 from .tools import list_directory, read_text
 
 
-def register(registry: ToolRegistry) -> None:
-    """Register this plugin's tools in a caller-owned registry."""
-    registry.register(read_text)
-    registry.register(list_directory)
+def get_tools():
+    return [list_directory, read_text]
 
 
-__all__ = ["register", "read_text", "list_directory"]
+__all__ = ["get_tools", "read_text", "list_directory"]

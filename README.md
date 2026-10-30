@@ -1,159 +1,115 @@
-# Agent-Tools
+# Agent-Tools v0.3
 
-**框架无关的 Python 工具层**：统一调用 Python 函数与 MCP Tools，按需读取 Agent Skills。不是 Agent Runtime，也不负责 LLM、审批或沙箱。
+**App → Provider → Tool**. A small, framework-agnostic Python toolkit. An **App** bundles related MCP tools, Agent Skills, local Python tools, and optional application instructions, prompts and resources. All executable tool interfaces live in a **single `ToolRegistry`** and use a **single `ToolExecutor`**. No Agent runtime, UI, marketplace, secrets manager or dedicated skill/MCP registry.
 
-## 包
+## Design
 
-| 包 | 功能 |
-| --- | --- |
-| `agent-tools-core` | `@tool`、JSON Schema、注册、执行、插件发现 |
-| `agent-tools-fs` | 简单只读文件系统示例插件 |
-| `agent-tools-mcp` | MCP v2 Tools 导入与导出、Skills 桥接 |
-| `agent-tools-skills` | 本地 `SKILL.md` 技能目录，按需加载内容 |
+```text
+App (name, description, instructions, prompts, resources)
+  └── providers: PythonProvider | McpProvider | SkillProvider
+        └── ToolRegistry (one name space)
+               └── ToolExecutor (one call API)
 
-Python ≥3.11；使用 [uv](https://docs.astral.sh/uv/) 管理工作区。
+fs.read_text                    Native Python tool
+mcp.github.search_repositories  Remote MCP tool (example)
+skills.github.review-pr         Lazy SKILL.md loader
+```
+
+- `App.from_path(path)` reads a portable root `plugin.json`, optional `mcp.json` and `skills/`. It does not connect to MCP or run scripts.
+- `await registry.load_app(app)` discovers every provider and **atomically** registers the app and all its tools; duplicate tool or app names fail without partial registration. This connects to any configured MCP servers to discover their tools.
+- `registry.list_apps()`, `registry.get_app(name)`, `registry.list_tools(app=name)` expose app metadata and grouped tools.
+- `app.read_instructions()`, `app.list_prompts()`, `app.read_prompt(name)` and `app.read_resource(path)` load **read-only text on demand**. They do not change an Agent's instruction hierarchy. CLI `apps` and `context` work offline without MCP discovery.
+- `ToolExecutor.execute(name, arguments)` works equally for native, MCP and Skill tools and returns `ToolResult`.
+
+### Portable app folder
+
+```text
+my-app/
+  plugin.json             Required portable Agent Plugins manifest
+  mcp.json                Optional portable MCP server definitions
+  skills/
+    review-pr/SKILL.md    Optional Agent Skills
+  instructions.md         Optional Agent-Tools convention
+  prompts/triage.md       Optional Agent-Tools convention
+  resources/guide.md      Optional Agent-Tools convention
+```
+
+The identity fields of `plugin.json` are `name`, `description`, and `version`; optional standard fields such as `$schema`, `author`, and `extensions` may be present. This implementation **does not validate the full Agent Plugins manifest schema or implement OpenAI-specific extensions**. `instructions.md`, `prompts/`, `resources/` are local conventions, not standardized Agent Plugins fields.
+
+The optional `mcp.json` supports named Streamable HTTP (`"type": "streamable-http"`, `"url"`) and stdio (`"type": "stdio"`, `"command"`, optional `"args"`, `"env"`) configurations. MCP client connections are opened on tool discovery and on each invocation. This deliberately prioritizes simplicity over connection reuse. Remote MCP Tools retain the original JSON input schema; MCP Resources and Prompts are not imported as tools.
+
+Skills use the standard YAML-frontmatter `SKILL.md` format and are registered as `skills.<app>.<skill>`. An invocation with `{}` reads the skill instructions. With `{"resource":"references/checklist.md"}` it reads an allowed bundled text file. **Skill execution means loading instructions, not performing an Agent workflow**; scripts are not executed.
+
+### Quick start
 
 ```bash
 uv sync
-uv run pytest
-uv run python examples/unified.py
-uv run agent-tools list
-uv run agent-tools inspect fs.read_text
+uv run python examples/app_demo.py
+uv run pytest -q
+
+uv run agent-tools --app examples/apps/reviewer apps
+uv run agent-tools --app examples/apps/reviewer list --for-app reviewer
+uv run agent-tools --app examples/apps/reviewer inspect skills.reviewer.review-changes
+uv run agent-tools --app examples/apps/reviewer context reviewer
 ```
 
-`uv.lock` 需在可访问 PyPI 的环境首次 `uv sync` 时生成。
+A GitHub example is in `examples/apps/github/`. Its `mcp.json` URL is an intentional **placeholder**, so do not try to load its MCP tools until a trusted working server URL and necessary authentication are configured.
 
-## Python 工具
+### Python API
 
 ```python
-from agent_tools import ToolRegistry, ToolExecutor, tool
-
-@tool(name="math.add")
-def add(a: int, b: int) -> int:
-    """Add two integers."""
-    return a + b
+from agent_tools import App, ToolExecutor, ToolRegistry
 
 registry = ToolRegistry()
-registry.register(add)                       # 显式注册，不使用全局注册表
-result = ToolExecutor(registry).run("math.add", {"a": 2, "b": 3})
-print(result.output)                         # 5
-print(registry.get("math.add").input_schema)
+await registry.load_app(App.from_path("./examples/apps/reviewer"))
+app = registry.get_app("reviewer")
+print(app.read_instructions())
+print(app.read_prompt("review-summary"))
+print([tool.name for tool in registry.list_tools(app="reviewer")])
+
+result = await ToolExecutor(registry).execute("skills.reviewer.review-changes", {})
+print(result.to_dict())
 ```
 
-支持 `async def`；异步环境使用 `await executor.execute(name, arguments)`。输入严格校验，错误以 `ToolResult` 返回；取消不会被吞掉。
-
-## MCP 工具
+A Python-only app uses the same interface, without a separate plugin manager:
 
 ```python
-from agent_tools import ToolRegistry, ToolExecutor
-from agent_tools_mcp import MCPProvider
+from agent_tools import App, PythonProvider
 
-async def use_mcp():
-    registry = ToolRegistry()
-    provider = MCPProvider("demo", "http://localhost:8000/mcp")
-    async with provider:
-        async with registry.mounted(provider):  # tools/list → mcp.demo.*，退出自动卸载
-            result = await ToolExecutor(registry).execute(
-                "mcp.demo.echo", {"text": "hello"}
-            )
-            print(result.to_dict())
+await registry.load_app(App(
+    name="filesystem",
+    description="Native filesystem tools",
+    providers=[PythonProvider(["filesystem"])],
+))
 ```
 
-也可通过配置显式指定 stdio/HTTP 服务器（只连接可信来源）：
+Native tools use `@tool` as before. A Python plugin's Entry Point in the `agent_tools.plugins` group now points to a zero-argument factory returning an iterable of tools. There is no implicit or global registration.
 
 ```toml
-[mcp_servers.local]
-command = "python"
-args = ["my_server.py"]
-
-[mcp_servers.remote]
-url = "https://example.com/mcp"
+[project.entry-points."agent_tools.plugins"]
+filesystem = "agent_tools_fs:get_tools"
 ```
 
-```python
-provider = MCPProvider.from_config("mcp-servers.toml", "local")
+## Packages
+
+| Distribution | Purpose | Dependencies |
+| --- | --- | --- |
+| `agent-tools-core` | App, Tool, Registry, Executor, PythonProvider, CLI | Pydantic v2 |
+| `agent-tools-fs` | Example native tool provider | Core |
+| `agent-tools-skills` | SkillProvider | Core, PyYAML |
+| `agent-tools-mcp` | McpProvider | Core, MCP Python SDK v2, jsonschema |
+
+Python 3.11+. Use `uv` for workspace dependencies and isolated builds:
+
+```bash
+uv build --package agent-tools-core
+uv build --package agent-tools-fs
+uv build --package agent-tools-skills
+uv build --package agent-tools-mcp
 ```
 
-MCP Schema 保留原样并以 JSON Schema 校验；输出优先 `structured_content`，同时在 `ToolResult.metadata.content` 保存原始内容块（含图片等非文本类型）；远程工具错误保留 `is_error`。推荐在 Provider 连接内使用 `registry.mounted(provider)` 作用域，退出自动卸载。
+## Security and scope
 
-## Skills
+Only load trusted apps and MCP server configurations. MCP stdio can execute a subprocess. Python Entry Points execute installed Python code. Neither is sandboxed. Application instructions and skills are **untrusted text**, not system instructions or automatic authorization. Reading them never executes code. Skill, prompt and resource reads are confined to their bundle directories and limited to 1 MiB per file. The example `fs.*` tools are **not restricted to an allowed filesystem root**. Approvals, OAuth, permissions, audit, hot reload, MCP connection pooling, Agent loops and UI are intentionally out of scope.
 
-目录遵循 [Agent Skills](https://agentskills.io/specification)：`skills/code-review/SKILL.md`（YAML frontmatter 必含 `name` 与 `description`），可附带 `references/`、`scripts/` 等资源。
-
-```python
-from agent_tools import ToolRegistry, ToolExecutor
-from agent_tools_skills import SkillCatalog
-
-catalog = SkillCatalog.from_paths(["./skills"])
-registry = ToolRegistry()
-catalog.register(registry)       # skills.list/load/read_resource
-
-executor = ToolExecutor(registry)
-print(executor.run("skills.list", {}).output)
-print(executor.run("skills.load", {"skill_id": "local:code-review"}).output)
-```
-
-仅扫描显式指定的目录；读取 UTF-8 文件时限制大小，拒绝隐藏文件、符号链接和目录逃逸。**不会执行 Skill 脚本、遵循 Skill 指令或赋予额外权限**，这些属于上层 Agent 的职责。
-
-## 导出工具为 MCP Server
-
-使用低层 MCP Server 保留原始 Schema 和内容块；必须显式指定白名单，不会自动发布全部工具：
-
-```python
-from agent_tools_mcp import create_tools_server
-
-server = create_tools_server(registry, include=["math.add", "mcp.demo.echo"])
-# async with mcp.Client(server) as client: ...  # 进程内调用
-# app = server.streamable_http_app()            # HTTP /mcp，部署前需鉴权
-```
-
-完整双向示例：`uv run python examples/tools_server.py`。导出 Tools 不代理 Resources/Prompts。部署 HTTP 时由宿主负责身份认证和传输安全。
-
-## 授权与错误处理
-
-```python
-# 可选同步或异步回调；仅返回 True 才执行
-executor = ToolExecutor(registry, authorize=lambda name, args: name == "math.add")
-
-server = create_tools_server(
-    registry, include=["math.add"],
-    authorize=lambda ctx, name, args: name == "math.add",
-)
-```
-
-MCP 的 `ctx` 由宿主用于识别调用方；上例只是静态策略，生产中应结合已认证身份授权。回调异常也拒绝，取消保持传播。异常详情和校验器原始消息不会直接返回模型；MCP 导出端默认遮蔽上游错误内容，仅受信环境可启用 `expose_remote_errors=True`。成功输出及内部 `ToolResult.metadata` 不自动脱敏。
-
-## MCP Skills（SEP-2640，预览）
-
-**版本说明**：官方 Python SDK 2.3.0 尚未发布 Skills 扩展（上游主分支已实现）。以下桥接是预览接口，需安装包含 SEP-2640 的 SDK 版本；普通 `uv sync` 暂不能运行该示例。
-
-远程 MCP Skill 需服务器声明 Skills 扩展；显式启用后可按需加载，并逐文件验证清单中的 SHA-256 与字节数：
-
-```python
-async with MCPProvider("docs", "https://example.com/mcp", skills=True) as provider:
-    remote = provider.skills
-    print(await remote.list())              # 仅元数据，含来源 ID 和 URI
-    text = await remote.load("skill://code-review/SKILL.md")
-    # remote.register(registry)              # 可选：注册 skills.mcp.docs.* 工具
-```
-
-本地 Skill 可直接作为 MCP Skills Server 暴露：
-
-```python
-from agent_tools_mcp import create_skills_server
-
-server = create_skills_server(catalog)    # SKILL.md + 文本资源，生成完整摘要
-# 使用 MCP SDK 部署 server，或作为 MCPProvider 的 in-process server
-```
-
-运行双向示例：`uv run python examples/skills_bridge.py`。
-
-**限制**：仅导出/读取 UTF-8 小文件（每个不超过 256 KiB）；远程 `resources="dynamic"` 暂不加载，因为无法按静态摘要校验。服务器在创建时生成资源快照，修改内容后需重建。Skill 只是数据，绝不执行脚本；远程内容仍视为不可信输入。
-
-## 扩展与边界
-
-- 普通 Python 插件沿用 `agent_tools.plugins` Entry Points 和 `register(registry)`；见 `agent-tools-fs`。
-- 外部工具使用 `ToolSpec + ToolProvider`，通过 `await registry.mount(provider)` 注册；不会改变 `@tool` 的 API。
-- `ToolResult` 返回 `ok/output/error`；外部工具可额外携带 `metadata`。详细说明见 [架构说明](docs/architecture.md)。
-- **安全**：插件加载会执行第三方代码；MCP stdio 会启动子进程；示例 FS 插件没有文件系统沙箱。只加载可信内容。授权仅为可选回调，不代替身份认证或沙箱；执行器不提供超时、审计或幂等性保证。
-- v0.3.1 稳定了逐次调用授权、Provider 作用域和错误脱敏；Skills 仍走独立 MCP Skills Server，不执行脚本。
+Tests use deterministic in-process MCP client stubs, plus an optional actual MCP SDK integration test. The latter is skipped if MCP is unavailable in the test environment.

@@ -1,110 +1,61 @@
-"""Explicit tool registration and opt-in discovery of installed plugins."""
+"""One registry for Python, MCP and Skill tools, grouped by application."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from importlib.metadata import entry_points
-from typing import Any, AsyncIterator, Callable, Iterable
+from typing import Callable
 
-from .errors import DuplicateToolError, PluginLoadError, ToolNotFoundError
-from .spec import BoundTool, ToolProvider
+from .app import App
+from .errors import AppNotFoundError, DuplicateAppError, DuplicateToolError, ToolNotFoundError
 from .tool import Tool, as_tool
-
-PLUGIN_GROUP = "agent_tools.plugins"
 
 
 class ToolRegistry:
-    """An isolated registry, with no global state or import-time plugin loading."""
+    """Application-aware, isolated tool registry with atomic app loading."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, Tool | BoundTool] = {}
-        self._loaded_plugins: set[str] = set()
+        self._tools: dict[str, Tool] = {}
+        self._apps: dict[str, App] = {}
+        self._app_tools: dict[str, tuple[str, ...]] = {}
 
-    def register(self, value: Tool | Callable[..., Any]) -> Tool:
-        """Register a tool, rejecting names that already exist."""
+    def register(self, value: Tool | Callable) -> Tool:
+        """Register an ungrouped native tool explicitly."""
         definition = as_tool(value)
         if definition.name in self._tools:
             raise DuplicateToolError(f"Tool {definition.name!r} is already registered")
         self._tools[definition.name] = definition
         return definition
 
-    async def mount(self, provider: ToolProvider) -> list[str]:
-        """Discover and atomically register tools from an active provider."""
-        specs = list(await provider.discover())
-        names = [spec.name for spec in specs]
-        if len(names) != len(set(names)) or any(name in self._tools for name in names):
-            raise DuplicateToolError("Provider has duplicate or already registered tool names")
-        for spec in specs:
-            self._tools[spec.name] = BoundTool(spec, provider)
-        return names
+    async def load_app(self, app: App) -> list[str]:
+        """Discover all providers before committing the app or any of its tools."""
+        if app.name in self._apps:
+            raise DuplicateAppError(f"Application {app.name!r} is already loaded")
+        pending: dict[str, Tool] = {}
+        for provider in app.providers:
+            for value in await provider.discover():
+                definition = as_tool(value)
+                if definition.name in self._tools or definition.name in pending:
+                    raise DuplicateToolError(f"Tool {definition.name!r} is already registered")
+                pending[definition.name] = definition
+        self._tools.update(pending)
+        self._apps[app.name] = app
+        self._app_tools[app.name] = tuple(sorted(pending))
+        return list(self._app_tools[app.name])
 
-    @asynccontextmanager
-    async def mounted(self, provider: ToolProvider) -> AsyncIterator[ToolProvider]:
-        """Mount for a scoped lifetime, unregistering even if the caller fails.
-
-        The caller owns the provider connection; keep it open around this scope.
-        """
-        await self.mount(provider)
-        try:
-            yield provider
-        finally:
-            self.unmount(provider)
-
-    def unmount(self, provider: ToolProvider) -> None:
-        """Unregister a provider's tools before closing its connection."""
-        for name, value in list(self._tools.items()):
-            if isinstance(value, BoundTool) and value.provider is provider:
-                del self._tools[name]
-
-    def get(self, name: str) -> Tool | BoundTool:
-        """Return a registered tool, or raise ToolNotFoundError."""
+    def get(self, name: str) -> Tool:
         try:
             return self._tools[name]
         except KeyError as exc:
             raise ToolNotFoundError(f"Unknown tool: {name!r}") from exc
 
-    def list_tools(self) -> list[Tool | BoundTool]:
-        """Return registered tools in a stable name-sorted order."""
-        return [self._tools[name] for name in sorted(self._tools)]
+    def get_app(self, name: str) -> App:
+        try:
+            return self._apps[name]
+        except KeyError as exc:
+            raise AppNotFoundError(f"Unknown application: {name!r}") from exc
 
-    def load_plugins(self, names: Iterable[str] | None = None) -> list[str]:
-        """Load installed plugin entry points into this registry on demand.
+    def list_apps(self) -> list[App]:
+        return [self._apps[name] for name in sorted(self._apps)]
 
-        Each entry point must be a synchronous ``register(registry)`` function.
-        Registration is atomic per plugin: failing plugins leave no tools behind.
-        Loading a plugin executes third-party Python code; only load trusted
-        packages. No security sandbox is provided.
-        """
-        requested = set(names) if names is not None else None
-        discovered = {}
-        for entry_point in entry_points(group=PLUGIN_GROUP):
-            if entry_point.name in discovered:
-                raise PluginLoadError(f"Duplicate plugin entry point: {entry_point.name!r}")
-            discovered[entry_point.name] = entry_point
-
-        if requested is not None:
-            missing = requested - discovered.keys()
-            if missing:
-                raise PluginLoadError(f"Unknown plugin(s): {', '.join(sorted(missing))}")
-
-        loaded: list[str] = []
-        for plugin_name in sorted(discovered):
-            if plugin_name in self._loaded_plugins:
-                continue
-            if requested is not None and plugin_name not in requested:
-                continue
-
-            snapshot = self._tools.copy()
-            try:
-                register = discovered[plugin_name].load()
-                if not callable(register):
-                    raise TypeError("Plugin entry point must resolve to register(registry)")
-                register(self)
-            except Exception as exc:
-                self._tools.clear()
-                self._tools.update(snapshot)
-                raise PluginLoadError(f"Failed to load plugin {plugin_name!r}: {exc}") from exc
-
-            self._loaded_plugins.add(plugin_name)
-            loaded.append(plugin_name)
-        return loaded
+    def list_tools(self, *, app: str | None = None) -> list[Tool]:
+        names = sorted(self._tools) if app is None else self._app_tools[self.get_app(app).name]
+        return [self._tools[name] for name in names]

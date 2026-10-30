@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tools-core"
-version = "0.3.1"
+version = "0.3.0"
 description = "Framework-agnostic Python tools, registry, validation, and execution"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.8,<3", "jsonschema>=4.23,<5"]
+dependencies = ["pydantic>=2.8,<3"]
 
 [project.scripts]
 agent-tools = "agent_tools.cli:main"

@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tools-skills"
-version = "0.3.1"
-description = "Local Agent Skills discovery and loading for Agent-Tools"
+version = "0.3.0"
+description = "Expose Agent Skills as ordinary Agent-Tools tools"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["agent-tools-core>=0.3,<0.4", "pyyaml>=6,<7"]
+dependencies = ["agent-tools-core>=0.3,<0.4", "PyYAML>=6,<7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
