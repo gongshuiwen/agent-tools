@@ -51,13 +51,12 @@ from agent_tools_mcp import MCPProvider
 async def use_mcp():
     registry = ToolRegistry()
     provider = MCPProvider("demo", "http://localhost:8000/mcp")
-    async with provider:                      # 建立并复用连接
-        await registry.mount(provider)       # tools/list → mcp.demo.*
-        result = await ToolExecutor(registry).execute(
-            "mcp.demo.echo", {"text": "hello"}
-        )
-        print(result.to_dict())
-        registry.unmount(provider)
+    async with provider:
+        async with registry.mounted(provider):  # tools/list → mcp.demo.*，退出自动卸载
+            result = await ToolExecutor(registry).execute(
+                "mcp.demo.echo", {"text": "hello"}
+            )
+            print(result.to_dict())
 ```
 
 也可通过配置显式指定 stdio/HTTP 服务器（只连接可信来源）：
@@ -75,7 +74,7 @@ url = "https://example.com/mcp"
 provider = MCPProvider.from_config("mcp-servers.toml", "local")
 ```
 
-MCP Schema 保留原样并以 JSON Schema 校验；输出优先 `structured_content`，同时在 `ToolResult.metadata.content` 保存原始内容块（含图片等非文本类型）；远程工具错误保留 `is_error`。连接关闭前应 `registry.unmount(provider)`。
+MCP Schema 保留原样并以 JSON Schema 校验；输出优先 `structured_content`，同时在 `ToolResult.metadata.content` 保存原始内容块（含图片等非文本类型）；远程工具错误保留 `is_error`。推荐在 Provider 连接内使用 `registry.mounted(provider)` 作用域，退出自动卸载。
 
 ## Skills
 
@@ -94,7 +93,7 @@ print(executor.run("skills.list", {}).output)
 print(executor.run("skills.load", {"skill_id": "local:code-review"}).output)
 ```
 
-仅扫描显式指定的目录；读取 UTF-8 文件时限制大小和目录逃逸。**不会执行 Skill 脚本、遵循 Skill 指令或赋予额外权限**，这些属于上层 Agent 的职责。
+仅扫描显式指定的目录；读取 UTF-8 文件时限制大小，拒绝隐藏文件、符号链接和目录逃逸。**不会执行 Skill 脚本、遵循 Skill 指令或赋予额外权限**，这些属于上层 Agent 的职责。
 
 ## 导出工具为 MCP Server
 
@@ -108,7 +107,21 @@ server = create_tools_server(registry, include=["math.add", "mcp.demo.echo"])
 # app = server.streamable_http_app()            # HTTP /mcp，部署前需鉴权
 ```
 
-完整双向示例：`uv run python examples/tools_server.py`。导出 Tools 不代理 Resources/Prompts，且不会自动添加授权与沙箱。
+完整双向示例：`uv run python examples/tools_server.py`。导出 Tools 不代理 Resources/Prompts。部署 HTTP 时由宿主负责身份认证和传输安全。
+
+## 授权与错误处理
+
+```python
+# 可选同步或异步回调；仅返回 True 才执行
+executor = ToolExecutor(registry, authorize=lambda name, args: name == "math.add")
+
+server = create_tools_server(
+    registry, include=["math.add"],
+    authorize=lambda ctx, name, args: name == "math.add",
+)
+```
+
+MCP 的 `ctx` 由宿主用于识别调用方；上例只是静态策略，生产中应结合已认证身份授权。回调异常也拒绝，取消保持传播。异常详情和校验器原始消息不会直接返回模型；MCP 导出端默认遮蔽上游错误内容，仅受信环境可启用 `expose_remote_errors=True`。成功输出及内部 `ToolResult.metadata` 不自动脱敏。
 
 ## MCP Skills（SEP-2640，预览）
 
@@ -142,5 +155,5 @@ server = create_skills_server(catalog)    # SKILL.md + 文本资源，生成完�
 - 普通 Python 插件沿用 `agent_tools.plugins` Entry Points 和 `register(registry)`；见 `agent-tools-fs`。
 - 外部工具使用 `ToolSpec + ToolProvider`，通过 `await registry.mount(provider)` 注册；不会改变 `@tool` 的 API。
 - `ToolResult` 返回 `ok/output/error`；外部工具可额外携带 `metadata`。详细说明见 [架构说明](docs/architecture.md)。
-- **安全**：插件加载会执行第三方代码；MCP stdio 会启动子进程；示例 FS 插件没有文件系统沙箱。只加载可信内容。执行器目前不提供超时、权限、审计或幂等性保证。
-- v0.3.0 可以按白名单导出 ToolRegistry Tools；Skills 仍走独立 MCP Skills Server，不执行 Skill 脚本。
+- **安全**：插件加载会执行第三方代码；MCP stdio 会启动子进程；示例 FS 插件没有文件系统沙箱。只加载可信内容。授权仅为可选回调，不代替身份认证或沙箱；执行器不提供超时、审计或幂等性保证。
+- v0.3.1 稳定了逐次调用授权、Provider 作用域和错误脱敏；Skills 仍走独立 MCP Skills Server，不执行脚本。

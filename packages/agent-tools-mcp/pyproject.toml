@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tools-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "MCP Client tool provider for Agent-Tools"
 requires-python = ">=3.11"
 dependencies = ["agent-tools-core>=0.3,<0.4", "mcp>=2.0,<3"]

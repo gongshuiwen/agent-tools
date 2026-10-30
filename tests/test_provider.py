@@ -60,3 +60,44 @@ def test_invalid_schema_rejected():
     from agent_tools import ToolDefinitionError
     with pytest.raises(ToolDefinitionError):
         ToolSpec("remote.error", "bad", {"type": "object", "properties": {"x": {"type": 3}}})
+
+
+def test_mounted_context_cleans_up_on_error_and_cancel():
+    async def check():
+        registry = ToolRegistry()
+        provider = Provider()
+        with pytest.raises(ValueError, match="caller"):
+            async with registry.mounted(provider):
+                assert registry.get("remote.echo").name == "remote.echo"
+                raise ValueError("caller")
+        assert registry.list_tools() == []
+
+        with pytest.raises(asyncio.CancelledError):
+            async with registry.mounted(provider):
+                raise asyncio.CancelledError()
+        assert registry.list_tools() == []
+
+        async with registry.mounted(provider):
+            assert (await ToolExecutor(registry).execute("remote.echo", {"value": 4})).output == 4
+        assert registry.list_tools() == []
+
+    asyncio.run(check())
+
+
+def test_provider_authorization_and_error_redaction():
+    class UnsafeProvider(Provider):
+        async def invoke(self, name, arguments):
+            raise RuntimeError("secret-from-provider")
+
+    async def check():
+        registry = ToolRegistry()
+        provider = UnsafeProvider()
+        async with registry.mounted(provider):
+            executor = ToolExecutor(registry, authorize=lambda name, args: False)
+            assert (await executor.execute("remote.echo", {"value": 2})).error.code == "permission_denied"
+            assert provider.calls == []
+            result = await ToolExecutor(registry).execute("remote.echo", {"value": 1})
+            assert result.error.code == "execution_error"
+            assert "secret-from-provider" not in str(result.to_dict())
+
+    asyncio.run(check())
