@@ -6,6 +6,7 @@ from importlib.metadata import entry_points
 from typing import Any, Callable, Iterable
 
 from .errors import DuplicateToolError, PluginLoadError, ToolNotFoundError
+from .spec import BoundTool, ToolProvider
 from .tool import Tool, as_tool
 
 PLUGIN_GROUP = "agent_tools.plugins"
@@ -15,7 +16,7 @@ class ToolRegistry:
     """An isolated registry, with no global state or import-time plugin loading."""
 
     def __init__(self) -> None:
-        self._tools: dict[str, Tool] = {}
+        self._tools: dict[str, Tool | BoundTool] = {}
         self._loaded_plugins: set[str] = set()
 
     def register(self, value: Tool | Callable[..., Any]) -> Tool:
@@ -26,14 +27,30 @@ class ToolRegistry:
         self._tools[definition.name] = definition
         return definition
 
-    def get(self, name: str) -> Tool:
+    async def mount(self, provider: ToolProvider) -> list[str]:
+        """Discover and atomically register tools from an active provider."""
+        specs = list(await provider.discover())
+        names = [spec.name for spec in specs]
+        if len(names) != len(set(names)) or any(name in self._tools for name in names):
+            raise DuplicateToolError("Provider has duplicate or already registered tool names")
+        for spec in specs:
+            self._tools[spec.name] = BoundTool(spec, provider)
+        return names
+
+    def unmount(self, provider: ToolProvider) -> None:
+        """Unregister a provider's tools before closing its connection."""
+        for name, value in list(self._tools.items()):
+            if isinstance(value, BoundTool) and value.provider is provider:
+                del self._tools[name]
+
+    def get(self, name: str) -> Tool | BoundTool:
         """Return a registered tool, or raise ToolNotFoundError."""
         try:
             return self._tools[name]
         except KeyError as exc:
             raise ToolNotFoundError(f"Unknown tool: {name!r}") from exc
 
-    def list_tools(self) -> list[Tool]:
+    def list_tools(self) -> list[Tool | BoundTool]:
         """Return registered tools in a stable name-sorted order."""
         return [self._tools[name] for name in sorted(self._tools)]
 

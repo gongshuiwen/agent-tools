@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tools-fs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Example filesystem tools plugin for Agent-Tools"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["agent-tools-core>=0.1,<0.2"]
+dependencies = ["agent-tools-core>=0.2,<0.3"]
 
 [project.entry-points."agent_tools.plugins"]
 filesystem = "agent_tools_fs:register"

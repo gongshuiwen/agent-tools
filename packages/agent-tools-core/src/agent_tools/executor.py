@@ -7,10 +7,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from jsonschema import Draft202012Validator, ValidationError as JSONSchemaError
 from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from .errors import ToolNotFoundError
 from .registry import ToolRegistry
+from .spec import BoundTool
 
 _JSON_VALUE = TypeAdapter(Any, config=ConfigDict(ser_json_inf_nan="constants"))
 
@@ -36,14 +38,18 @@ class ToolResult:
     ok: bool
     output: Any = None
     error: ToolError | None = None
+    metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "tool": self.tool,
             "ok": self.ok,
             "output": self.output,
             "error": self.error.to_dict() if self.error else None,
         }
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
 
 
 class ToolExecutor:
@@ -71,18 +77,38 @@ class ToolExecutor:
                 error=ToolError("validation_error", "Tool arguments must be a JSON object"),
             )
 
+        if isinstance(definition, BoundTool):
+            try:
+                Draft202012Validator(definition.input_schema).validate(dict(arguments))
+            except JSONSchemaError as exc:
+                issue = {"loc": list(exc.absolute_path), "type": "json_schema", "msg": "Invalid value"}
+                return ToolResult(
+                    name, False, error=ToolError("validation_error", "Invalid tool arguments", [issue])
+                )
+            try:
+                result = await definition.provider.invoke(name, dict(arguments))
+            except Exception as exc:
+                return ToolResult(
+                    name, False, error=ToolError("execution_error", f"{type(exc).__name__}: {exc}")
+                )
+            # Preserve protocol content and status, but require JSON-safe boundaries.
+            try:
+                json.dumps(result.to_dict(), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                return ToolResult(
+                    name, False, error=ToolError("serialization_error", str(exc))
+                )
+            return result
+
         try:
             validated = definition.validate_arguments(dict(arguments))
         except ValidationError as exc:
-            # Never echo raw argument values in validation errors.
             issues = [
                 {"loc": list(issue["loc"]), "type": issue["type"], "msg": issue["msg"]}
                 for issue in exc.errors(include_url=False)
             ]
             return ToolResult(
-                name,
-                False,
-                error=ToolError("validation_error", "Invalid tool arguments", issues),
+                name, False, error=ToolError("validation_error", "Invalid tool arguments", issues)
             )
 
         try:
@@ -91,11 +117,8 @@ class ToolExecutor:
             else:
                 output = await asyncio.to_thread(definition.func, **validated)
         except Exception as exc:
-            # asyncio.CancelledError (BaseException) still propagates as expected.
             return ToolResult(
-                name,
-                False,
-                error=ToolError("execution_error", f"{type(exc).__name__}: {exc}"),
+                name, False, error=ToolError("execution_error", f"{type(exc).__name__}: {exc}")
             )
 
         try:

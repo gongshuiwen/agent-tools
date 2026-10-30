@@ -1,11 +1,13 @@
 [project]
 name = "agent-tools-workspace"
-version = "0.1.0"
+version = "0.2.0"
 description = "Development workspace for the framework-agnostic Agent-Tools packages"
 requires-python = ">=3.11"
 dependencies = [
     "agent-tools-core",
     "agent-tools-fs",
+    "agent-tools-mcp",
+    "agent-tools-skills",
 ]
 
 [dependency-groups]
@@ -23,6 +25,8 @@ members = ["packages/*"]
 [tool.uv.sources]
 agent-tools-core = { workspace = true }
 agent-tools-fs = { workspace = true }
+agent-tools-mcp = { workspace = true }
+agent-tools-skills = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

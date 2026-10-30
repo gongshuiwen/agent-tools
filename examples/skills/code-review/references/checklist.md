@@ -1,0 +1,3 @@
+- Validate inputs and errors.
+- Check backwards compatibility.
+- Add tests for new behavior.

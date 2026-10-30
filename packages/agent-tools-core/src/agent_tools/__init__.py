@@ -9,6 +9,7 @@ from .errors import (
 )
 from .executor import ToolError, ToolExecutor, ToolResult
 from .registry import PLUGIN_GROUP, ToolRegistry
+from .spec import ToolProvider, ToolSpec
 from .tool import Tool, tool
 
 __all__ = [
@@ -22,6 +23,8 @@ __all__ = [
     "ToolExecutor",
     "ToolNotFoundError",
     "ToolRegistry",
+    "ToolSpec",
+    "ToolProvider",
     "ToolResult",
     "tool",
 ]
