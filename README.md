@@ -8,7 +8,7 @@
 | --- | --- |
 | `agent-tools-core` | `@tool`、JSON Schema、注册、执行、插件发现 |
 | `agent-tools-fs` | 简单只读文件系统示例插件 |
-| `agent-tools-mcp` | MCP v2 Tools Client、Skills 导入与导出 |
+| `agent-tools-mcp` | MCP v2 Tools 导入与导出、Skills 桥接 |
 | `agent-tools-skills` | 本地 `SKILL.md` 技能目录，按需加载内容 |
 
 Python ≥3.11；使用 [uv](https://docs.astral.sh/uv/) 管理工作区。
@@ -96,6 +96,20 @@ print(executor.run("skills.load", {"skill_id": "local:code-review"}).output)
 
 仅扫描显式指定的目录；读取 UTF-8 文件时限制大小和目录逃逸。**不会执行 Skill 脚本、遵循 Skill 指令或赋予额外权限**，这些属于上层 Agent 的职责。
 
+## 导出工具为 MCP Server
+
+使用低层 MCP Server 保留原始 Schema 和内容块；必须显式指定白名单，不会自动发布全部工具：
+
+```python
+from agent_tools_mcp import create_tools_server
+
+server = create_tools_server(registry, include=["math.add", "mcp.demo.echo"])
+# async with mcp.Client(server) as client: ...  # 进程内调用
+# app = server.streamable_http_app()            # HTTP /mcp，部署前需鉴权
+```
+
+完整双向示例：`uv run python examples/tools_server.py`。导出 Tools 不代理 Resources/Prompts，且不会自动添加授权与沙箱。
+
 ## MCP Skills（SEP-2640，预览）
 
 **版本说明**：官方 Python SDK 2.3.0 尚未发布 Skills 扩展（上游主分支已实现）。以下桥接是预览接口，需安装包含 SEP-2640 的 SDK 版本；普通 `uv sync` 暂不能运行该示例。
@@ -129,4 +143,4 @@ server = create_skills_server(catalog)    # SKILL.md + 文本资源，生成完�
 - 外部工具使用 `ToolSpec + ToolProvider`，通过 `await registry.mount(provider)` 注册；不会改变 `@tool` 的 API。
 - `ToolResult` 返回 `ok/output/error`；外部工具可额外携带 `metadata`。详细说明见 [架构说明](docs/architecture.md)。
 - **安全**：插件加载会执行第三方代码；MCP stdio 会启动子进程；示例 FS 插件没有文件系统沙箱。只加载可信内容。执行器目前不提供超时、权限、审计或幂等性保证。
-- v0.2.1 只导出 **Skills MCP Server**，不导出整个 ToolRegistry 为 MCP Server；不支持任意 Skill 脚本执行。
+- v0.3.0 可以按白名单导出 ToolRegistry Tools；Skills 仍走独立 MCP Skills Server，不执行 Skill 脚本。
