@@ -1,9 +1,10 @@
-"""A small, framework-independent contract for Python function tools."""
+"""A small, framework-independent contract for callable and external tools."""
 
 from __future__ import annotations
 
 import inspect
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, TypeVar, get_type_hints, overload
@@ -28,7 +29,9 @@ class Tool:
     name: str
     description: str
     func: Callable[..., Any]
-    input_model: type[BaseModel]
+    input_model: type[BaseModel] | None = None
+    schema: dict[str, Any] | None = None
+    validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
     @classmethod
     def from_callable(
@@ -108,9 +111,42 @@ class Tool:
             input_model=input_model,
         )
 
+    @classmethod
+    def from_schema(
+        cls,
+        *,
+        name: str,
+        description: str,
+        schema: dict[str, Any],
+        func: Callable[..., Any],
+        validator: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> Tool:
+        """Wrap a non-Python tool without losing its original JSON Schema.
+
+        The provider supplies validation (e.g. JSON Schema for an MCP tool).
+        This keeps schema-specific dependencies outside the core package.
+        """
+        if not isinstance(name, str) or not _NAME_PATTERN.fullmatch(name):
+            raise ToolDefinitionError(f"Invalid tool name: {name!r}")
+        if not isinstance(description, str) or not description.strip():
+            raise ToolDefinitionError(f"Tool {name!r} needs a description")
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise ToolDefinitionError(f"Tool {name!r} needs an object input schema")
+        if not callable(func) or not callable(validator):
+            raise ToolDefinitionError(f"Tool {name!r} needs a function and validator")
+        return cls(
+            name=name,
+            description=inspect.cleandoc(description),
+            func=func,
+            schema=deepcopy(schema),
+            validator=validator,
+        )
+
     @property
     def input_schema(self) -> dict[str, Any]:
-        """The JSON Schema for named arguments (Pydantic / JSON Schema 2020-12)."""
+        """The JSON Schema for named tool arguments."""
+        if self.schema is not None:
+            return deepcopy(self.schema)
         return self.input_model.model_json_schema()
 
     @property
@@ -118,7 +154,9 @@ class Tool:
         return inspect.iscoroutinefunction(self.func)
 
     def validate_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Validate inputs without flattening nested Pydantic models to dicts."""
+        """Validate with Pydantic or the external provider's schema validator."""
+        if self.validator is not None:
+            return self.validator(arguments)
         model = self.input_model.model_validate(arguments)
         return {key: getattr(model, key) for key in type(model).model_fields}
 

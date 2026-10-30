@@ -1,135 +1,113 @@
-"""Import remote MCP tools without implementing the MCP transport."""
+"""Discover MCP Tools and expose them through the standard Tool interface."""
 
 from __future__ import annotations
 
 import re
-import tomllib
-from pathlib import Path
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any
 
-from agent_tools import ToolError, ToolResult, ToolSpec
+from jsonschema import FormatChecker, validators
+
+from agent_tools import Tool, ToolArgumentsError, ToolInvocationError
+
+_ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
-class MCPProvider:
-    """A connected MCP server as a discoverable tool provider.
+@dataclass
+class McpProvider:
+    """Translate remote MCP tools to local Tool definitions.
 
-    Use inside ``async with``; only trusted server commands and URLs should be used.
+    ``target`` accepts a URL, an MCP SDK target, or an mcp.json server
+    specification. Connections are intentionally short-lived.
     """
 
-    def __init__(
-        self, name: str, server: Any, *, client_factory: Callable | None = None,
-        skills: bool = False,
-    ):
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
-            raise ValueError("Invalid MCP server name")
-        self.name = name
-        self.server = server
-        self._factory = client_factory
-        self._skills_enabled = skills
-        self._manager: Any = None
-        self._client: Any = None
-        self._names: dict[str, str] = {}
+    name: str
+    target: Any
 
-    @classmethod
-    def from_config(cls, path: str | Path, name: str, *, skills: bool = False) -> MCPProvider:
-        """Read one explicitly named server from ``[mcp_servers.NAME]``."""
-        settings = tomllib.loads(Path(path).read_text(encoding="utf-8"))["mcp_servers"][name]
-        if "url" in settings:
-            if "command" in settings:
-                raise ValueError("Specify only url or command")
-            return cls(name, settings["url"], skills=skills)
-        from mcp import StdioServerParameters
+    def _client_target(self) -> Any:
+        if not isinstance(self.target, dict):
+            return self.target
+        if self.target.get("type") in ("streamable-http", "http"):
+            return self.target["url"]
+        if self.target.get("type") == "stdio":
+            from mcp import StdioServerParameters
 
-        return cls(name, StdioServerParameters(
-            command=settings["command"], args=settings.get("args", []),
-            env=settings.get("env"),
-        ), skills=skills)
+            return StdioServerParameters(
+                command=self.target["command"],
+                args=self.target.get("args", []),
+                env=self.target.get("env"),
+            )
+        raise ValueError("Unsupported MCP connection type")
 
-    async def __aenter__(self) -> MCPProvider:
-        if self._client is not None:
-            raise RuntimeError("MCPProvider is already connected")
-        if self._factory is None:
-            from mcp import Client
+    async def discover(self) -> list[Tool]:
+        from mcp import Client
 
-            factory = Client
-        else:
-            factory = self._factory
-        options = {}
-        if self._skills_enabled:
-            try:
-                from mcp.client.extensions.skills import Skills
-            except ModuleNotFoundError as exc:
-                raise RuntimeError("MCP Skills requires an SDK release with SEP-2640 support") from exc
+        if not _ALIAS.fullmatch(self.name):
+            raise ValueError(f"Invalid MCP server alias: {self.name!r}")
 
-            options["extensions"] = [Skills()]
-        self._manager = factory(self.server, **options)
-        try:
-            self._client = await self._manager.__aenter__()
-        except BaseException:
-            self._manager = None
-            raise
-        return self
+        remote_tools: list[Any] = []
+        async with Client(self._client_target()) as client:
+            cursor: str | None = None
+            while True:
+                page = await client.list_tools(cursor=cursor)
+                remote_tools.extend(page.tools)
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        try:
-            await self._manager.__aexit__(exc_type, exc, tb)
-        finally:
-            self._client = None
-            self._manager = None
-            self._names.clear()
+        tools: list[Tool] = []
+        for remote in remote_tools:
+            original_name = remote.name
+            # Some MCP servers expose '/' or ':' in names. Normalize only the
+            # registry ID; always call the remote tool by its original name.
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", original_name)
+            full_name = f"mcp.{self.name}.{safe_name}"
+            schema = remote.input_schema
+            schema_validator = validators.validator_for(schema)
+            schema_validator.check_schema(schema)
+            checker = schema_validator(schema, format_checker=FormatChecker())
 
-    @property
-    def skills(self):
-        """Remote Skill reader for an active, Skills-enabled connection."""
-        if self._client is None or not self._skills_enabled:
-            raise RuntimeError("Connect MCPProvider with skills=True to read Skills")
-        from mcp.client.extensions.skills import Skills
+            def validate(arguments: dict[str, Any], *, _checker=checker) -> dict[str, Any]:
+                issues = sorted(_checker.iter_errors(arguments), key=lambda issue: issue.json_path)
+                if issues:
+                    raise ToolArgumentsError(
+                        "Invalid tool arguments",
+                        [
+                            {
+                                "loc": list(issue.absolute_path),
+                                "type": str(issue.validator),
+                                "msg": f"JSON Schema constraint {issue.validator!r} failed",
+                            }
+                            for issue in issues
+                        ],
+                    )
+                return arguments
 
-        from .remote_skills import RemoteSkills
+            def proxy(tool_name: str):
+                async def call(**arguments: Any) -> dict[str, Any]:
+                    from mcp import Client
 
-        return RemoteSkills(self.name, self._client, self._client.extension(Skills))
+                    async with Client(self._client_target()) as client:
+                        result = await client.call_tool(tool_name, arguments)
+                    content = [block.model_dump(mode="json", by_alias=True) for block in result.content]
+                    output = {"content": content, "structured_content": result.structured_content}
+                    if result.is_error:
+                        raise ToolInvocationError(
+                            "mcp_tool_error",
+                            "MCP server reported a tool error",
+                            [{"result": output}],
+                        )
+                    return output
 
-    async def discover(self) -> list[ToolSpec]:
-        if self._client is None:
-            raise RuntimeError("Connect MCPProvider before discovering tools")
-        specs: list[ToolSpec] = []
-        names: dict[str, str] = {}
-        cursor = None
-        seen = set()
-        while True:
-            page = await self._client.list_tools(cursor=cursor)
-            for tool in page.tools:
-                local_name = f"mcp.{self.name}.{tool.name}"
-                if local_name in names:
-                    raise ValueError(f"Duplicate MCP tool: {tool.name}")
-                specs.append(ToolSpec(
-                    name=local_name,
-                    description=tool.description or tool.title or tool.name,
-                    input_schema=tool.input_schema,
-                    output_schema=getattr(tool, "output_schema", None),
-                    source=f"mcp:{self.name}",
-                ))
-                names[local_name] = tool.name
-            next_cursor = getattr(page, "next_cursor", None)
-            if not next_cursor:
-                break
-            if next_cursor in seen:
-                raise ValueError("Repeated MCP pagination cursor")
-            seen.add(next_cursor)
-            cursor = next_cursor
-        self._names = names
-        return specs
+                return call
 
-    async def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        if self._client is None or name not in self._names:
-            raise RuntimeError("MCP tool is unavailable or provider is closed")
-        result = await self._client.call_tool(self._names[name], arguments)
-        content = [block.model_dump(mode="json", by_alias=True, exclude_none=True)
-                   for block in result.content]
-        output = result.structured_content if result.structured_content is not None else content
-        failed = bool(result.is_error)
-        return ToolResult(
-            tool=name, ok=not failed, output=output,
-            error=ToolError("remote_tool_error", "MCP tool reported an error") if failed else None,
-            metadata={"source": f"mcp:{self.name}", "content": content, "is_error": failed},
-        )
+            tools.append(
+                Tool.from_schema(
+                    name=full_name,
+                    description=remote.description or remote.title or f"MCP tool {original_name}",
+                    schema=schema,
+                    func=proxy(original_name),
+                    validator=validate,
+                )
+            )
+        return tools
