@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-tools-core"
+version = "0.1.0"
+description = "Framework-agnostic Python tools, registry, validation, and execution"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.8,<3"]
+
+[project.scripts]
+agent-tools = "agent_tools.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
