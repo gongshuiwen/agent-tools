@@ -96,7 +96,9 @@ print(executor.run("skills.load", {"skill_id": "local:code-review"}).output)
 
 仅扫描显式指定的目录；读取 UTF-8 文件时限制大小和目录逃逸。**不会执行 Skill 脚本、遵循 Skill 指令或赋予额外权限**，这些属于上层 Agent 的职责。
 
-## MCP Skills（SEP-2640）
+## MCP Skills（SEP-2640，预览）
+
+**版本说明**：官方 Python SDK 2.3.0 尚未发布 Skills 扩展（上游主分支已实现）。以下桥接是预览接口，需安装包含 SEP-2640 的 SDK 版本；普通 `uv sync` 暂不能运行该示例。
 
 远程 MCP Skill 需服务器声明 Skills 扩展；显式启用后可按需加载，并逐文件验证清单中的 SHA-256 与字节数：
 

@@ -56,7 +56,10 @@ class MCPProvider:
             factory = self._factory
         options = {}
         if self._skills_enabled:
-            from mcp.client.extensions.skills import Skills
+            try:
+                from mcp.client.extensions.skills import Skills
+            except ModuleNotFoundError as exc:
+                raise RuntimeError("MCP Skills requires an SDK release with SEP-2640 support") from exc
 
             options["extensions"] = [Skills()]
         self._manager = factory(self.server, **options)

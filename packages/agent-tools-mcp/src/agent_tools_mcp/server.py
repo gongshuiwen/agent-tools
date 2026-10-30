@@ -15,7 +15,10 @@ def create_skills_server(catalog: SkillCatalog, name: str = "agent-tools-skills"
     """Create a snapshot MCP server for explicitly selected local text Skills."""
     from mcp.server import MCPServer
     from mcp.server.mcpserver.resources import TextResource
-    from mcp.server.skills import Skills
+    try:
+        from mcp.server.skills import Skills
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("MCP Skills requires an SDK release with SEP-2640 support") from exc
     from mcp.shared.exceptions import MCPError
     from mcp.shared.skills import GetSkillResult, ListSkillsResult, Skill, SkillResource
     from mcp.types import INVALID_PARAMS
