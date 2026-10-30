@@ -1,5 +1,10 @@
 # agent-tools-mcp
 
-Imports tools from trusted MCP servers (stdio / Streamable HTTP) via the official `mcp` Python SDK v2. This is a client adapter, not an MCP server.
+MCP v2 adapters: import server Tools, read remote Skills, and expose a local SkillCatalog through SEP-2640.
 
+- `MCPProvider(name, server, skills=True)` enables `provider.skills.list/load/read_resource`.
+- `provider.skills.register(registry)` adds namespaced `skills.mcp.<name>.*` readers.
+- `create_skills_server(catalog)` exports a snapshot of local UTF-8 resources with SHA-256 manifests.
+
+Skill execution, general-purpose tool-server export, authorization and sandboxing are out of scope.
 See the repository [README](../../README.md).

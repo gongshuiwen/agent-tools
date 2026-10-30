@@ -16,30 +16,34 @@ class MCPProvider:
     Use inside ``async with``; only trusted server commands and URLs should be used.
     """
 
-    def __init__(self, name: str, server: Any, *, client_factory: Callable | None = None):
+    def __init__(
+        self, name: str, server: Any, *, client_factory: Callable | None = None,
+        skills: bool = False,
+    ):
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
             raise ValueError("Invalid MCP server name")
         self.name = name
         self.server = server
         self._factory = client_factory
+        self._skills_enabled = skills
         self._manager: Any = None
         self._client: Any = None
         self._names: dict[str, str] = {}
 
     @classmethod
-    def from_config(cls, path: str | Path, name: str) -> MCPProvider:
+    def from_config(cls, path: str | Path, name: str, *, skills: bool = False) -> MCPProvider:
         """Read one explicitly named server from ``[mcp_servers.NAME]``."""
         settings = tomllib.loads(Path(path).read_text(encoding="utf-8"))["mcp_servers"][name]
         if "url" in settings:
             if "command" in settings:
                 raise ValueError("Specify only url or command")
-            return cls(name, settings["url"])
+            return cls(name, settings["url"], skills=skills)
         from mcp import StdioServerParameters
 
         return cls(name, StdioServerParameters(
             command=settings["command"], args=settings.get("args", []),
             env=settings.get("env"),
-        ))
+        ), skills=skills)
 
     async def __aenter__(self) -> MCPProvider:
         if self._client is not None:
@@ -50,7 +54,12 @@ class MCPProvider:
             factory = Client
         else:
             factory = self._factory
-        self._manager = factory(self.server)
+        options = {}
+        if self._skills_enabled:
+            from mcp.client.extensions.skills import Skills
+
+            options["extensions"] = [Skills()]
+        self._manager = factory(self.server, **options)
         try:
             self._client = await self._manager.__aenter__()
         except BaseException:
@@ -65,6 +74,17 @@ class MCPProvider:
             self._client = None
             self._manager = None
             self._names.clear()
+
+    @property
+    def skills(self):
+        """Remote Skill reader for an active, Skills-enabled connection."""
+        if self._client is None or not self._skills_enabled:
+            raise RuntimeError("Connect MCPProvider with skills=True to read Skills")
+        from mcp.client.extensions.skills import Skills
+
+        from .remote_skills import RemoteSkills
+
+        return RemoteSkills(self.name, self._client, self._client.extension(Skills))
 
     async def discover(self) -> list[ToolSpec]:
         if self._client is None:

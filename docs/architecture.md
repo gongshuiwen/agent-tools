@@ -1,17 +1,20 @@
-# 设计约束（v0.2）
+# 架构约束（v0.2.1）
 
 ```text
 Python @tool ───────┐
-                    ├── ToolRegistry ── ToolExecutor ── ToolResult
+                    ├── ToolRegistry ── ToolExecutor
 MCPProvider ─ ToolSpec┘
 
-SkillCatalog ── skills.list / skills.load / skills.read_resource
+Local SkillCatalog ──┬── skills.list/load/read_resource
+                     └── MCP Skills Server (SEP-2640)
+MCP Skills Client ────── RemoteSkills (manifest-checked reads)
 ```
 
-1. **Tool 是可执行能力**：本地函数保留 Pydantic 输入模型；远程 Tool 保留来源提供的 JSON Schema。二者通过同一 Registry 和 Executor 调用。
-2. **Provider 有生命周期**：`async with MCPProvider(...)` 建立连接，`mount` 发现工具，关闭连接前 `unmount`。重复名称直接报错，不重命名已有工具。
-3. **Skill 不是 Tool**：Catalog 仅管理元数据、说明和文本资源；可选地将读取操作注册成三个普通 Tool。运行 Skill 内脚本不在范围内。
-4. **结果语义**：`ok=False` 不代表 Python 异常必须向 Agent 抛出。MCP 工具错误保留内容块；连接/协议异常作为执行错误处理，调用取消原样传播。
-5. **安全分层**：工具名、Schema 和 Skill 描述不是授权凭证；权限、沙箱、联网和审计由宿主系统负责。Skill 内容是不可信输入。
+- Core 只定义工具契约、注册与执行，不依赖 MCP 或 Skills。
+- MCP Tool 保留外部 Schema；MCPProvider 持有连接，关闭前 `registry.unmount(provider)`。
+- SkillCatalog 管本地技能；RemoteSkills 通过现有 MCP Client 会话按需发现、加载远程技能。Skill 不是可直接执行的 Tool。
+- 双向 Skills 桥接使用官方 `io.modelcontextprotocol/skills`，不实现新传输协议。静态资源校验字节数和 SHA-256，动态资源暂不读取。
+- MCP Server 导出是创建时的**快照**。仅显式选择的本地目录，跳过隐藏文件与符号链接；读取限制为 UTF-8、每文件 256 KiB。
+- MCP Server、Skill 文件和本地插件都应视为不可信来源；调用许可、沙箱和审批由宿主负责。此项目不会执行 Skill 指令或脚本。
 
-**后续可选**：MCP Skills 扩展（SEP-2640）桥接、MCP Server 导出、权限与审计。核心包不直接依赖 MCP 或 PyYAML。
+完整用法见 [README](../README.md)。

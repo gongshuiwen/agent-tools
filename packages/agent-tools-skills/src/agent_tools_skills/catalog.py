@@ -64,6 +64,18 @@ class SkillCatalog:
     def load(self, skill_id: str) -> str:
         return self.read_resource(skill_id, "SKILL.md")
 
+    def resource_paths(self, skill_id: str) -> list[str]:
+        """Enumerate explicit, non-hidden regular files without following symlinks."""
+        base = self._skills[skill_id].location
+        return sorted(
+            path.relative_to(base).as_posix()
+            for path in base.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.resolve().is_relative_to(base)
+            and not any(part.startswith(".") for part in path.relative_to(base).parts)
+        )
+
     def read_resource(self, skill_id: str, path: str) -> str:
         """Read a small UTF-8 resource, rejecting traversal and symlink escapes."""
         base = self._skills[skill_id].location
