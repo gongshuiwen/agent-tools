@@ -1,4 +1,4 @@
-# 架构约束（v0.2.1）
+# 架构约束（v0.3.0）
 
 ```text
 Python @tool ───────┐
@@ -8,6 +8,7 @@ MCPProvider ─ ToolSpec┘
 Local SkillCatalog ──┬── skills.list/load/read_resource
                      └── MCP Skills Server (SEP-2640)
 MCP Skills Client ────── RemoteSkills (manifest-checked reads)
+ToolRegistry ──────────── create_tools_server (allowlist → MCP Server)
 ```
 
 - Core 只定义工具契约、注册与执行，不依赖 MCP 或 Skills。
@@ -18,3 +19,6 @@ MCP Skills Client ────── RemoteSkills (manifest-checked reads)
 - MCP Server、Skill 文件和本地插件都应视为不可信来源；调用许可、沙箱和审批由宿主负责。此项目不会执行 Skill 指令或脚本。
 
 完整用法见 [README](../README.md)。
+
+- `create_tools_server(registry, include=[...])` 使用低层 MCP Server 保留 JSON Schema，明确限定导出范围；列表是快照，执行仍经 ToolExecutor，远程 Provider 需保持连接。
+- 远程 MCP 内容块、`is_error`、结构化数据可透传；不代理 Resources/Prompts，也不提供 HTTP 身份验证。
