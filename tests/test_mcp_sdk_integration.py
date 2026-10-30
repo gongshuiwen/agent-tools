@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from agent_tools import App, ToolExecutor, ToolRegistry
 from agent_tools_mcp import McpProvider
 
 
-@pytest.mark.asyncio
-async def test_in_process_official_mcp_sdk():
+def test_in_process_official_mcp_sdk():
     pytest.importorskip("mcp")
+    asyncio.run(_exercise_mcp_sdk())
+
+
+async def _exercise_mcp_sdk():
     from mcp.server import MCPServer
 
     server = MCPServer("Agent-Tools Integration Test")
